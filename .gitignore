@@ -1,0 +1,51 @@
+# Project files (not tracked)
+PLANNING.md
+TASK.md
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+*.egg
+dist/
+build/
+*.so
+
+# Model weights and checkpoints
+FoundationPose/weights/
+*.pt
+*.pth
+*.ckpt
+*.bin
+*.safetensors
+
+# Debug output
+debug/
+/tmp/fp_debug/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Conda / venv
+.env/
+venv/
+*.conda
+
+# Jupyter
+.ipynb_checkpoints/
+
+# RealSense
+*.bag
+
+# Logs
+*.log
+wandb/
+runs/
