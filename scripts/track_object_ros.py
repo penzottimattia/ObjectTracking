@@ -148,8 +148,49 @@ def main():
     config = rs.config()
     config.enable_stream(rs.stream.color, args.width, args.height, rs.format.bgr8, args.fps)
     config.enable_stream(rs.stream.depth, args.width, args.height, rs.format.z16, args.fps)
-    profile = pipeline.start(config)
+    try:
+        profile = pipeline.start(config)
+    except Exception as e:
+        logging.error("Failed to start RealSense pipeline: %s", e)
+        # Try to clean up ROS resources before exiting
+        try:
+            node.destroy_node()
+        except Exception:
+            pass
+        try:
+            rclpy.shutdown()
+        except Exception:
+            pass
+        raise
     align = rs.align(rs.stream.color)
+
+    # Setup signal handlers for clean shutdown
+    import signal
+
+    def _handle_signal(signum, frame):
+        logging.info("Received signal %s, shutting down...", signum)
+        try:
+            if 'pipeline' in locals() and pipeline is not None:
+                pipeline.stop()
+        except Exception as e:
+            logging.warning("Error stopping pipeline during signal handling: %s", e)
+        try:
+            if display:
+                display.destroy()
+        except Exception:
+            pass
+        try:
+            node.destroy_node()
+        except Exception:
+            pass
+        try:
+            rclpy.shutdown()
+        except Exception:
+            pass
+        sys.exit(0)
+
+    signal.signal(signal.SIGINT, _handle_signal)
+    signal.signal(signal.SIGTERM, _handle_signal)
 
     depth_scale = profile.get_device().first_depth_sensor().get_depth_scale()
     intr = (
@@ -265,11 +306,24 @@ def main():
     except KeyboardInterrupt:
         logging.info("Interrupted by user")
     finally:
-        pipeline.stop()
-        if display:
-            display.destroy()
-        node.destroy_node()
-        rclpy.shutdown()
+        try:
+            if 'pipeline' in locals() and pipeline is not None:
+                pipeline.stop()
+        except Exception as e:
+            logging.warning("Error stopping pipeline: %s", e)
+        try:
+            if display:
+                display.destroy()
+        except Exception as e:
+            logging.warning("Error destroying display: %s", e)
+        try:
+            node.destroy_node()
+        except Exception as e:
+            logging.warning("Error destroying ROS node: %s", e)
+        try:
+            rclpy.shutdown()
+        except Exception as e:
+            logging.warning("Error shutting down rclpy: %s", e)
         logging.info("Shutdown complete")
 
 

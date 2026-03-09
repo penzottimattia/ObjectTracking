@@ -166,9 +166,27 @@ def main():
     # --- Tkinter window (no GPU conflict unlike OpenCV Qt5 backend) ---
     root = tk.Tk()
     root.title("SAM3 Viewer")
-    root.protocol("WM_DELETE_WINDOW", root.destroy)
+
+    def _on_window_close():
+        logging.info("Window close requested, shutting down...")
+        root.destroy()
+
+    root.protocol("WM_DELETE_WINDOW", _on_window_close)
     canvas_label = tk.Label(root)
     canvas_label.pack()
+
+    # Setup signal handlers for clean exit (SIGINT/SIGTERM)
+    import signal
+
+    def _handle_signal(signum, frame):
+        logging.info("Received signal %s, shutting down...", signum)
+        try:
+            root.after(0, root.destroy)
+        except Exception:
+            pass
+
+    signal.signal(signal.SIGINT, _handle_signal)
+    signal.signal(signal.SIGTERM, _handle_signal)
 
     # Deferred imports: keep CUDA init after GUI init
     from sam3 import build_sam3_image_model
@@ -273,6 +291,8 @@ def main():
         pil_img = PILImage.fromarray(vis_rgb)
         tk_image = ImageTk.PhotoImage(pil_img)
         canvas_label.configure(image=tk_image)
+        # keep a reference on the widget to prevent garbage collection
+        canvas_label.image = tk_image
 
         root.after(1, update_frame)
 
@@ -283,7 +303,11 @@ def main():
     except KeyboardInterrupt:
         pass
     finally:
-        pipeline.stop()
+        try:
+            if 'pipeline' in locals() and pipeline is not None:
+                pipeline.stop()
+        except Exception as e:
+            logging.warning("Error stopping pipeline: %s", e)
         logging.info("Shutdown complete")
 
 
