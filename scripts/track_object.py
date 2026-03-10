@@ -53,6 +53,10 @@ def main():
     )
     parser.add_argument("--debug", type=int, default=1, help="Debug level (0=off, 1=vis, 2=save)")
     parser.add_argument("--no-vis", action="store_true", help="Disable visualization window")
+    parser.add_argument(
+        "--mesh-origin", action="store_true",
+        help="Draw axes at the original mesh origin instead of the AABB center",
+    )
     args = parser.parse_args()
 
     display = None
@@ -184,6 +188,7 @@ def main():
             vis_bgr = draw_tracking_vis(
                 color_bgr, None, to_origin, bbox, K,
                 False, 0.0, args.object,
+                use_mesh_origin=args.mesh_origin,
             )
             key = display.show(vis_bgr)
             if key in ("q", "Escape"):
@@ -232,6 +237,7 @@ def main():
                 vis_bgr = draw_tracking_vis(
                     color_bgr, pose, to_origin, bbox, K,
                     initialized, fps_val, args.object,
+                    use_mesh_origin=args.mesh_origin,
                 )
                 key = display.show(vis_bgr)
                 if key in ("q", "Escape"):

@@ -243,6 +243,7 @@ def draw_tracking_vis(
     initialized: bool,
     fps_val: float,
     object_name: str,
+    use_mesh_origin: bool = False,
 ) -> np.ndarray:
     """
     Render the tracking overlay on a BGR image.
@@ -256,6 +257,8 @@ def draw_tracking_vis(
         initialized (bool): Whether tracking is active.
         fps_val (float): Current FPS for display.
         object_name (str): Object name for HUD.
+        use_mesh_origin (bool): If True, draw axes at the original mesh
+            origin (raw pose) instead of the AABB center.
 
     Returns:
         np.ndarray: BGR image with overlay drawn.
@@ -263,11 +266,13 @@ def draw_tracking_vis(
     vis_bgr = color_bgr.copy()
     if initialized and pose is not None:
         center_pose = pose @ np.linalg.inv(to_origin)
+        # Pose used for the axis gizmo: mesh origin or AABB center
+        axis_pose = pose if use_mesh_origin else center_pose
         vis_rgb = cv2.cvtColor(vis_bgr, cv2.COLOR_BGR2RGB)
         vis_rgb = draw_posed_3d_box(K, img=vis_rgb, ob_in_cam=center_pose, bbox=bbox)
         vis_rgb = draw_xyz_axis(
             vis_rgb,
-            ob_in_cam=center_pose,
+            ob_in_cam=axis_pose,
             scale=0.1,
             K=K,
             thickness=3,
