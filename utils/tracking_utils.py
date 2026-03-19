@@ -88,6 +88,13 @@ def get_sam3_mask(
     """
     from PIL import Image
 
+    # Reason: FoundationPose's register()/predict() call
+    # torch.set_default_tensor_type('torch.cuda.FloatTensor') as a global
+    # side effect. SAM3 has code paths (geometry encoder, etc.) that create
+    # tensors via torch.tensor() and expect them on CPU. Reset to CPU default
+    # before running SAM3; FoundationPose will re-set CUDA when it runs next.
+    torch.set_default_tensor_type(torch.FloatTensor)
+
     pil_image = Image.fromarray(color_rgb)
     inference_state = processor.set_image(pil_image)
     output = processor.set_text_prompt(state=inference_state, prompt=object_name)
@@ -148,12 +155,32 @@ def load_mesh(object_name: str) -> Tuple[str, Path]:
     return str(mesh_path), mesh_dir
 
 
+def create_shared_estimator_components():
+    """
+    Create shared scorer, refiner, and GL context for multi-object tracking.
+
+    Sharing these heavy GPU components across multiple FoundationPose
+    estimators avoids redundant memory allocation.
+
+    Returns:
+        tuple: (scorer, refiner, glctx) to pass to build_estimator.
+    """
+    scorer = ScorePredictor()
+    refiner = PoseRefinePredictor()
+    glctx = dr.RasterizeCudaContext()
+    logging.info("Shared estimator components created (scorer, refiner, GL context)")
+    return scorer, refiner, glctx
+
+
 def build_estimator(
     mesh_path: str,
     debug_dir: str = "/tmp/fp_debug",
     est_refine_iter: int = 2,
     track_refine_iter: int = 2,
     debug: int = 0,
+    scorer=None,
+    refiner=None,
+    glctx=None,
 ) -> Tuple[FoundationPose, trimesh.Trimesh, np.ndarray, np.ndarray]:
     """
     Build the FoundationPose estimator from a mesh file.
@@ -164,6 +191,9 @@ def build_estimator(
         est_refine_iter (int): Refinement iterations for registration.
         track_refine_iter (int): Refinement iterations for tracking.
         debug (int): Debug level (0=off, 1=basic, 2=detailed).
+        scorer: Optional shared ScorePredictor (created if None).
+        refiner: Optional shared PoseRefinePredictor (created if None).
+        glctx: Optional shared nvdiffrast GL context (created if None).
 
     Returns:
         tuple: (estimator, mesh, to_origin, bbox).
@@ -175,9 +205,12 @@ def build_estimator(
     to_origin, extents = trimesh.bounds.oriented_bounds(mesh)
     bbox = np.stack([-extents / 2, extents / 2], axis=0).reshape(2, 3).astype(np.float32)
 
-    scorer = ScorePredictor()
-    refiner = PoseRefinePredictor()
-    glctx = dr.RasterizeCudaContext()
+    if scorer is None:
+        scorer = ScorePredictor()
+    if refiner is None:
+        refiner = PoseRefinePredictor()
+    if glctx is None:
+        glctx = dr.RasterizeCudaContext()
 
     est = FoundationPose(
         model_pts=mesh.vertices,
@@ -243,7 +276,7 @@ def draw_tracking_vis(
     initialized: bool,
     fps_val: float,
     object_name: str,
-    use_mesh_origin: bool = False,
+    mesh_origin: bool = False,
 ) -> np.ndarray:
     """
     Render the tracking overlay on a BGR image.
@@ -257,8 +290,8 @@ def draw_tracking_vis(
         initialized (bool): Whether tracking is active.
         fps_val (float): Current FPS for display.
         object_name (str): Object name for HUD.
-        use_mesh_origin (bool): If True, draw axes at the original mesh
-            origin (raw pose) instead of the AABB center.
+        mesh_origin (bool): If True, draw axes at the raw mesh origin
+            instead of the AABB center.
 
     Returns:
         np.ndarray: BGR image with overlay drawn.
@@ -270,6 +303,7 @@ def draw_tracking_vis(
         axis_pose = pose if use_mesh_origin else center_pose
         vis_rgb = cv2.cvtColor(vis_bgr, cv2.COLOR_BGR2RGB)
         vis_rgb = draw_posed_3d_box(K, img=vis_rgb, ob_in_cam=center_pose, bbox=bbox)
+        axis_pose = pose if mesh_origin else center_pose
         vis_rgb = draw_xyz_axis(
             vis_rgb,
             ob_in_cam=axis_pose,
@@ -294,4 +328,82 @@ def draw_tracking_vis(
     )
     return vis_bgr
 
+
+def draw_multi_tracking_vis(
+    color_bgr: np.ndarray,
+    tracked_objects: list,
+    K: np.ndarray,
+    fps_val: float,
+) -> np.ndarray:
+    """
+    Render the tracking overlay for multiple objects on a BGR image.
+
+    Args:
+        color_bgr: BGR camera frame.
+        tracked_objects: List of dicts, each with keys: name (str),
+            pose (ndarray|None), to_origin (ndarray), bbox (ndarray),
+            initialized (bool), color_bgr (tuple of 3 ints, BGR).
+        K: 3x3 camera intrinsics.
+        fps_val: Current FPS for display.
+
+    Returns:
+        BGR image with overlay drawn.
+    """
+    vis_bgr = color_bgr.copy()
+    vis_rgb = cv2.cvtColor(vis_bgr, cv2.COLOR_BGR2RGB)
+
+    for obj in tracked_objects:
+        if obj["initialized"] and obj["pose"] is not None:
+            center_pose = obj["pose"] @ np.linalg.inv(obj["to_origin"])
+            vis_rgb = draw_posed_3d_box(
+                K, img=vis_rgb, ob_in_cam=center_pose, bbox=obj["bbox"],
+            )
+            axis_pose = obj["pose"] if obj.get("mesh_origin") else center_pose
+            vis_rgb = draw_xyz_axis(
+                vis_rgb,
+                ob_in_cam=axis_pose,
+                scale=0.1,
+                K=K,
+                thickness=3,
+                transparency=0,
+                is_input_rgb=True,
+            )
+
+    vis_bgr = cv2.cvtColor(vis_rgb, cv2.COLOR_RGB2BGR)
+
+    for obj in tracked_objects:
+        if obj["initialized"] and obj["pose"] is not None:
+            center_3d = obj["pose"][:3, 3]
+            px = K @ center_3d
+            if px[2] > 0:
+                u, v = int(px[0] / px[2]), int(px[1] / px[2])
+                cv2.putText(
+                    vis_bgr, obj["name"], (u + 10, v - 10),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, obj["color_bgr"], 2,
+                )
+
+    n_tracking = sum(1 for o in tracked_objects if o["initialized"])
+    all_ok = n_tracking == len(tracked_objects)
+    cv2.putText(
+        vis_bgr,
+        f"FPS: {fps_val:.1f} | {n_tracking}/{len(tracked_objects)} tracking",
+        (10, 30),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.6,
+        (0, 255, 0) if all_ok else (0, 165, 255),
+        2,
+    )
+
+    x_offset = 10
+    for obj in tracked_objects:
+        tag = "OK" if obj["initialized"] else "..."
+        label = f"{obj['name']}:{tag}"
+        (w, _), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 2)
+        cv2.putText(
+            vis_bgr, label, (x_offset, 60),
+            cv2.FONT_HERSHEY_SIMPLEX, 0.5, obj["color_bgr"], 2,
+        )
+        x_offset += w + 20
+
+    return vis_bgr
 
