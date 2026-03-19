@@ -85,10 +85,6 @@ def main():
     )
     parser.add_argument("--debug", type=int, default=1, help="Debug level (0=off, 1=vis, 2=save)")
     parser.add_argument("--no-vis", action="store_true", help="Disable visualization window")
-    parser.add_argument(
-        "--mesh-origin", action="store_true",
-        help="Draw axes at the original mesh origin instead of the AABB center",
-    )
     args = parser.parse_args()
 
     object_names = args.objects or ([args.object] if args.object else None)
