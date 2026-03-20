@@ -17,6 +17,7 @@ import os
 import sys
 import time
 from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import cv2
@@ -33,8 +34,12 @@ def main():
         description="6-DoF object tracking with SAM3 + FoundationPose, published via ROS2"
     )
     parser.add_argument(
-        "--object", type=str, required=True,
-        help="Object name (must match folder in object/)",
+        "--objects", type=str, nargs="+",
+        help="Object names (must match folders in object/)",
+    )
+    parser.add_argument(
+        "--object", type=str, default=None,
+        help="Single object name (backward compat; prefer --objects)",
     )
     parser.add_argument("--width", type=int, default=640, help="Camera width")
     parser.add_argument("--height", type=int, default=480, help="Camera height")
@@ -87,7 +92,9 @@ def main():
 
     from utils.tracking_utils import (
         build_estimator,
+        create_shared_estimator_components,
         draw_tracking_vis,
+        draw_multi_tracking_vis,
         get_sam3_mask,
         intrinsics_to_K,
         load_mesh,
@@ -124,28 +131,73 @@ def main():
 
         return msg
 
+    MAX_OBJECTS = 5
+
+    def _track_one_object(obj, color_rgb, depth, K, refine_iter):
+        try:
+            obj["pose"] = obj["est"].track_one(
+                rgb=color_rgb, depth=depth, K=K, iteration=refine_iter,
+            )
+        except Exception as e:
+            logging.warning(f"Tracking lost for '{obj['name']}': {e}")
+            obj["initialized"] = False
+            obj["pose"] = None
+
     set_logging_format()
     set_seed(0)
 
-    mesh_path, _ = load_mesh(args.object)
+    object_names = args.objects or ([args.object] if args.object else None)
+    if not object_names:
+        parser.error("Provide --objects <name1> <name2> ... or --object <name>")
+    if len(object_names) > MAX_OBJECTS:
+        parser.error(f"Maximum {MAX_OBJECTS} objects supported, got {len(object_names)}")
+    if len(object_names) != len(set(object_names)):
+        parser.error("Duplicate object names are not allowed")
 
-    debug_dir = f"/tmp/fp_debug/{args.object}"
-    os.makedirs(debug_dir, exist_ok=True)
-    est, mesh, to_origin, bbox = build_estimator(
-        mesh_path=mesh_path,
-        debug_dir=debug_dir,
-        est_refine_iter=args.est_refine_iter,
-        track_refine_iter=args.track_refine_iter,
-        debug=args.debug,
-    )
+    # create shared read-only components and build per-object estimators
+    scorer, refiner, _ = create_shared_estimator_components()
+
+    tracked = []
+    for name in object_names:
+        mesh_path, _ = load_mesh(name)
+        debug_dir = f"/tmp/fp_debug/{name}"
+        os.makedirs(debug_dir, exist_ok=True)
+        est, mesh, to_origin, bbox = build_estimator(
+            mesh_path=mesh_path,
+            debug_dir=debug_dir,
+            est_refine_iter=args.est_refine_iter,
+            track_refine_iter=args.track_refine_iter,
+            debug=args.debug,
+            scorer=scorer,
+            refiner=refiner,
+        )
+        tracked.append({
+            "name": name,
+            "est": est,
+            "mesh": mesh,
+            "to_origin": to_origin,
+            "bbox": bbox,
+            "pose": None,
+            "initialized": False,
+            "mesh_origin": args.mesh_origin,
+        })
 
     _, sam_processor = load_sam3(confidence=args.confidence)
 
     # --- ROS2 init ---
     rclpy.init()
     node = rclpy.create_node("object_tracker")
-    pose_pub = node.create_publisher(PoseStamped, args.topic, 10)
-    logging.info(f"ROS2 publisher on '{args.topic}' (frame: {args.frame_id})")
+
+    # Create a publisher per object (single-object backward compat uses args.topic)
+    publishers = {}
+    if len(tracked) == 1:
+        publishers[tracked[0]["name"]] = node.create_publisher(PoseStamped, args.topic, 10)
+        logging.info(f"ROS2 publisher on '{args.topic}' (frame: {args.frame_id})")
+    else:
+        for obj in tracked:
+            topic_name = f"{args.topic.rstrip('/')}/{obj['name']}"
+            publishers[obj["name"]] = node.create_publisher(PoseStamped, topic_name, 10)
+            logging.info(f"ROS2 publisher on '{topic_name}' (frame: {args.frame_id})")
 
     # --- RealSense ---
     pipeline = rs.pipeline()
@@ -208,106 +260,121 @@ def main():
         f"depth_scale={depth_scale}"
     )
 
-    pose = None
-    initialized = False
     fps_hist: deque = deque(maxlen=30)
+    track_pool = ThreadPoolExecutor(max_workers=MAX_OBJECTS)
 
-    # --- Phase 1: one-shot SAM3 detection for initial mask ---
-    logging.info(f"Tracking '{args.object}' — running SAM3 for initial detection...")
-
-    while not initialized and rclpy.ok():
-        if display and display.closed:
-            break
-
-        frames = pipeline.wait_for_frames()
-        frames = align.process(frames)
-        depth_frame = frames.get_depth_frame()
-        color_frame = frames.get_color_frame()
-        if not depth_frame or not color_frame:
-            continue
-
-        color_bgr = np.asanyarray(color_frame.get_data())
-        color_rgb = cv2.cvtColor(color_bgr, cv2.COLOR_BGR2RGB)
-        depth = np.asanyarray(depth_frame.get_data()).astype(np.float32) * depth_scale
-
-        mask = get_sam3_mask(sam_processor, color_rgb, args.object)
-        if mask is not None and mask.sum() > 100:
-            try:
-                pose = est.register(
-                    K=K,
-                    rgb=color_rgb,
-                    depth=depth,
-                    ob_mask=mask.astype(bool),
-                    iteration=args.est_refine_iter,
-                )
-                initialized = True
-                logging.info("Initial pose registered — switching to FP tracking")
-            except Exception as e:
-                logging.warning(f"Registration failed: {e}")
-
-        if display:
-            vis_bgr = draw_tracking_vis(
-                color_bgr, None, to_origin, bbox, K,
-                False, 0.0, args.object,
-                use_mesh_origin=args.mesh_origin,
-            )
-            key = display.show(vis_bgr)
-            if key in ("q", "Escape"):
-                return
-
-    # --- Phase 2: real-time FoundationPose tracking (no SAM3) ---
-    logging.info("Entering real-time tracking loop (SAM3 is no longer running)")
+    # --- Phase 1: SAM3 detection for uninitialized objects ---
+    logging.info("Running SAM3 for initial detection...")
 
     try:
-        while rclpy.ok():
+        running = True
+        while running and rclpy.ok():
             if display and display.closed:
                 break
 
-            frames = pipeline.wait_for_frames()
-            frames = align.process(frames)
-            depth_frame = frames.get_depth_frame()
-            color_frame = frames.get_color_frame()
-            if not depth_frame or not color_frame:
-                continue
-
-            color_bgr = np.asanyarray(color_frame.get_data())
-            depth = np.asanyarray(depth_frame.get_data()).astype(np.float32) * depth_scale
-            color_rgb = cv2.cvtColor(color_bgr, cv2.COLOR_BGR2RGB)
-            t0 = time.time()
-
-            try:
-                pose = est.track_one(
-                    rgb=color_rgb,
-                    depth=depth,
-                    K=K,
-                    iteration=args.track_refine_iter,
-                )
-            except Exception as e:
-                logging.warning(f"Tracking failed: {e}")
-                initialized = False
-                pose = None
-                continue
-
-            msg = pose_to_msg(pose, args.frame_id, node)
-            pose_pub.publish(msg)
-
-            dt = time.time() - t0
-            fps_hist.append(1.0 / dt if dt > 1e-4 else 0.0)
-            fps_val = sum(fps_hist) / len(fps_hist) if fps_hist else 0.0
-
-            if display:
-                vis_bgr = draw_tracking_vis(
-                    color_bgr, pose, to_origin, bbox, K,
-                    initialized, fps_val, args.object,
-                    use_mesh_origin=args.mesh_origin,
-                )
-                key = display.show(vis_bgr)
-                if key in ("q", "Escape"):
+            # Loop until all objects are initialized
+            while not all(o["initialized"] for o in tracked) and rclpy.ok():
+                if display and display.closed:
+                    running = False
                     break
-                if key == "r":
-                    initialized = False
-                    pose = None
-                    logging.info("Tracking reset — will re-run SAM3")
+
+                frames = pipeline.wait_for_frames()
+                frames = align.process(frames)
+                depth_frame = frames.get_depth_frame()
+                color_frame = frames.get_color_frame()
+                if not depth_frame or not color_frame:
+                    continue
+
+                color_bgr = np.asanyarray(color_frame.get_data())
+                color_rgb = cv2.cvtColor(color_bgr, cv2.COLOR_BGR2RGB)
+                depth = np.asanyarray(depth_frame.get_data()).astype(np.float32) * depth_scale
+
+                for obj in tracked:
+                    if obj["initialized"]:
+                        continue
+                    mask = get_sam3_mask(sam_processor, color_rgb, obj["name"])
+                    if mask is not None and mask.sum() > 100:
+                        try:
+                            obj["pose"] = obj["est"].register(
+                                K=K,
+                                rgb=color_rgb,
+                                depth=depth,
+                                ob_mask=mask.astype(bool),
+                                iteration=args.est_refine_iter,
+                            )
+                            obj["initialized"] = True
+                            n_done = sum(1 for o in tracked if o["initialized"])
+                            logging.info(f"Registered '{obj['name']}' ({n_done}/{len(tracked)})")
+                        except Exception as e:
+                            logging.warning(f"Registration failed for '{obj['name']}': {e}")
+
+                if display:
+                    # show all objects (some may be uninitialized)
+                    vis_bgr = draw_multi_tracking_vis(color_bgr, tracked, K, 0.0)
+                    key = display.show(vis_bgr)
+                    if key in ("q", "Escape"):
+                        running = False
+                        break
+
+            if not running:
+                break
+
+            # --- Phase 2: real-time FoundationPose tracking (no SAM3) ---
+            logging.info("All objects registered — entering real-time tracking loop")
+
+            while rclpy.ok() and running:
+                if display and display.closed:
+                    running = False
+                    break
+
+                frames = pipeline.wait_for_frames()
+                frames = align.process(frames)
+                depth_frame = frames.get_depth_frame()
+                color_frame = frames.get_color_frame()
+                if not depth_frame or not color_frame:
+                    continue
+
+                color_bgr = np.asanyarray(color_frame.get_data())
+                depth = np.asanyarray(depth_frame.get_data()).astype(np.float32) * depth_scale
+                color_rgb = cv2.cvtColor(color_bgr, cv2.COLOR_BGR2RGB)
+                t0 = time.time()
+
+                active = [o for o in tracked if o["initialized"]]
+                if len(active) == 1:
+                    _track_one_object(active[0], color_rgb, depth, K, args.track_refine_iter)
+                elif active:
+                    futures = [
+                        track_pool.submit(
+                            _track_one_object, obj, color_rgb, depth, K,
+                            args.track_refine_iter,
+                        )
+                        for obj in active
+                    ]
+                    for f in futures:
+                        f.result()
+
+                # Publish poses for initialized objects
+                for obj in tracked:
+                    if obj["initialized"] and obj["pose"] is not None:
+                        msg = pose_to_msg(obj["pose"], args.frame_id, node)
+                        publishers[obj["name"]].publish(msg)
+
+                dt = time.time() - t0
+                fps_hist.append(1.0 / dt if dt > 1e-4 else 0.0)
+                fps_val = sum(fps_hist) / len(fps_hist) if fps_hist else 0.0
+
+                if display:
+                    vis_bgr = draw_multi_tracking_vis(color_bgr, tracked, K, fps_val)
+                    key = display.show(vis_bgr)
+                    if key in ("q", "Escape"):
+                        running = False
+                        break
+                    if key == "r":
+                        for obj in tracked:
+                            obj["initialized"] = False
+                            obj["pose"] = None
+                        fps_hist.clear()
+                        logging.info("Tracking reset — re-detecting all objects")
 
     except KeyboardInterrupt:
         logging.info("Interrupted by user")
