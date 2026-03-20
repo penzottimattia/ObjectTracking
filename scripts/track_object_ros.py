@@ -133,6 +133,13 @@ def main():
 
     MAX_OBJECTS = 5
 
+    TRACK_COLORS_BGR = [
+        (0, 255, 0),
+        (0, 0, 255),
+        (255, 0, 0),
+        (0, 165, 255),
+        (255, 255, 0),
+    ]
     def _track_one_object(obj, color_rgb, depth, K, refine_iter):
         try:
             obj["pose"] = obj["est"].track_one(
@@ -158,7 +165,7 @@ def main():
     scorer, refiner, _ = create_shared_estimator_components()
 
     tracked = []
-    for name in object_names:
+    for i, name in enumerate(object_names):
         mesh_path, _ = load_mesh(name)
         debug_dir = f"/tmp/fp_debug/{name}"
         os.makedirs(debug_dir, exist_ok=True)
@@ -177,6 +184,7 @@ def main():
             "mesh": mesh,
             "to_origin": to_origin,
             "bbox": bbox,
+            "color_bgr": TRACK_COLORS_BGR[i % len(TRACK_COLORS_BGR)],
             "pose": None,
             "initialized": False,
             "mesh_origin": args.mesh_origin,
