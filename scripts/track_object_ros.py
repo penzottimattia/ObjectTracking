@@ -41,16 +41,16 @@ def main():
         "--object", type=str, default=None,
         help="Single object name (backward compat; prefer --objects)",
     )
-    parser.add_argument("--width", type=int, default=640, help="Camera width")
-    parser.add_argument("--height", type=int, default=480, help="Camera height")
+    parser.add_argument("--width", type=int, default=1280, help="Camera width")
+    parser.add_argument("--height", type=int, default=720, help="Camera height")
     parser.add_argument("--fps", type=int, default=30, help="Camera FPS")
     parser.add_argument(
         "--est_refine_iter", type=int, default=2,
         help="Refinement iterations for initial registration",
     )
     parser.add_argument(
-        "--track_refine_iter", type=int, default=2,
-        help="Refinement iterations for frame-to-frame tracking",
+        "--track_refine_iter", type=int, default=5,
+        help="Refinement iterations for frame-to-frame tracking (more = less drift, slower)",
     )
     parser.add_argument(
         "--confidence", type=float, default=0.5,
@@ -66,6 +66,11 @@ def main():
     )
     parser.add_argument("--debug", type=int, default=1, help="Debug level (0=off, 1=vis, 2=save)")
     parser.add_argument("--no-vis", action="store_true", help="Disable visualization window")
+    parser.add_argument(
+        "--camera", type=str, default=None,
+        help="Camera name from camera_config.yaml (e.g. robotcam, tablecam). "
+             "Default uses the 'default' key in the config.",
+    )
     parser.add_argument(
         "--mesh-origin", action="store_true",
         help="Draw axes at the original mesh origin instead of the AABB center",
@@ -97,6 +102,7 @@ def main():
         draw_multi_tracking_vis,
         get_sam3_mask,
         intrinsics_to_K,
+        load_camera_serial,
         load_mesh,
         load_sam3,
         set_logging_format,
@@ -210,6 +216,9 @@ def main():
     # --- RealSense ---
     pipeline = rs.pipeline()
     config = rs.config()
+    serial = load_camera_serial(args.camera)
+    if serial:
+        config.enable_device(serial)
     config.enable_stream(rs.stream.color, args.width, args.height, rs.format.bgr8, args.fps)
     config.enable_stream(rs.stream.depth, args.width, args.height, rs.format.z16, args.fps)
     try:
