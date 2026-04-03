@@ -75,6 +75,10 @@ def main():
         "--mesh-origin", action="store_true",
         help="Draw axes at the original mesh origin instead of the AABB center",
     )
+    parser.add_argument(
+        "--image-topic", type=str, default="/camera/color/image_raw",
+        help="ROS2 topic to publish camera images on",
+    )
     args = parser.parse_args()
 
     display = None
@@ -93,6 +97,8 @@ def main():
     import rclpy
     from rclpy.node import Node
     from geometry_msgs.msg import PoseStamped
+    from sensor_msgs.msg import Image
+    from cv_bridge import CvBridge
     from scipy.spatial.transform import Rotation as R
 
     from utils.tracking_utils import (
@@ -212,6 +218,11 @@ def main():
             topic_name = f"{args.topic.rstrip('/')}/{obj['name']}"
             publishers[obj["name"]] = node.create_publisher(PoseStamped, topic_name, 10)
             logging.info(f"ROS2 publisher on '{topic_name}' (frame: {args.frame_id})")
+
+    # Create image publisher
+    image_publisher = node.create_publisher(Image, args.image_topic, 10)
+    bridge = CvBridge()
+    logging.info(f"ROS2 image publisher on '{args.image_topic}'")
 
     # --- RealSense ---
     pipeline = rs.pipeline()
@@ -375,6 +386,12 @@ def main():
                     if obj["initialized"] and obj["pose"] is not None:
                         msg = pose_to_msg(obj["pose"], args.frame_id, node)
                         publishers[obj["name"]].publish(msg)
+
+                # Publish camera image
+                img_msg = bridge.cv2_to_imgmsg(color_bgr, encoding="bgr8")
+                img_msg.header.frame_id = args.frame_id
+                img_msg.header.stamp = node.get_clock().now().to_msg()
+                image_publisher.publish(img_msg)
 
                 dt = time.time() - t0
                 fps_hist.append(1.0 / dt if dt > 1e-4 else 0.0)
