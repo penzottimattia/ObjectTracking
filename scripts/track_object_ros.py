@@ -79,6 +79,10 @@ def main():
         "--image-topic", type=str, default="/camera/color/image_raw",
         help="ROS2 topic to publish camera images on",
     )
+    parser.add_argument(
+        "--reset-service", type=str, default="/reset_tracker",
+        help="ROS2 Trigger service name for external tracking reset",
+    )
     args = parser.parse_args()
 
     display = None
@@ -98,6 +102,7 @@ def main():
     from rclpy.node import Node
     from geometry_msgs.msg import PoseStamped
     from sensor_msgs.msg import Image
+    from std_srvs.srv import Trigger
     from cv_bridge import CvBridge
     from scipy.spatial.transform import Rotation as R
 
@@ -291,17 +296,46 @@ def main():
     fps_hist: deque = deque(maxlen=30)
     track_pool = ThreadPoolExecutor(max_workers=MAX_OBJECTS)
 
+    def reset_tracking_state(reason: str) -> None:
+        for obj in tracked:
+            obj["initialized"] = False
+            obj["pose"] = None
+        fps_hist.clear()
+        logging.info("Tracking reset (%s) — re-detecting all objects", reason)
+
+    pending_external_reset = {"value": False}
+
+    def handle_reset_service(request, response):
+        del request
+        pending_external_reset["value"] = True
+        response.success = True
+        response.message = "Reset requested; tracker will re-detect objects"
+        return response
+
+    node.create_service(Trigger, args.reset_service, handle_reset_service)
+    logging.info("ROS2 reset service on '%s'", args.reset_service)
+
     # --- Phase 1: SAM3 detection for uninitialized objects ---
     logging.info("Running SAM3 for initial detection...")
 
     try:
         running = True
         while running and rclpy.ok():
+            rclpy.spin_once(node, timeout_sec=0.0)
+            if pending_external_reset["value"]:
+                pending_external_reset["value"] = False
+                reset_tracking_state("service")
+
             if display and display.closed:
                 break
 
             # Loop until all objects are initialized
             while not all(o["initialized"] for o in tracked) and rclpy.ok():
+                rclpy.spin_once(node, timeout_sec=0.0)
+                if pending_external_reset["value"]:
+                    pending_external_reset["value"] = False
+                    reset_tracking_state("service")
+
                 if display and display.closed:
                     running = False
                     break
@@ -351,6 +385,12 @@ def main():
             logging.info("All objects registered — entering real-time tracking loop")
 
             while rclpy.ok() and running:
+                rclpy.spin_once(node, timeout_sec=0.0)
+                if pending_external_reset["value"]:
+                    pending_external_reset["value"] = False
+                    reset_tracking_state("service")
+                    break
+
                 if display and display.closed:
                     running = False
                     break
@@ -404,11 +444,7 @@ def main():
                         running = False
                         break
                     if key == "r":
-                        for obj in tracked:
-                            obj["initialized"] = False
-                            obj["pose"] = None
-                        fps_hist.clear()
-                        logging.info("Tracking reset — re-detecting all objects")
+                        reset_tracking_state("keyboard")
 
     except KeyboardInterrupt:
         logging.info("Interrupted by user")
