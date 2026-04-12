@@ -83,6 +83,10 @@ def main():
         "--reset-service", type=str, default="/reset_tracker",
         help="ROS2 Trigger service name for external tracking reset",
     )
+    parser.add_argument(
+        "--track-frames", type=int, default=0,
+        help="Number of tracking frames to run before pausing until reset is called. 0 disables the limit.",
+    )
     args = parser.parse_args()
 
     display = None
@@ -295,12 +299,18 @@ def main():
 
     fps_hist: deque = deque(maxlen=30)
     track_pool = ThreadPoolExecutor(max_workers=MAX_OBJECTS)
+    track_frames_remaining = args.track_frames if args.track_frames > 0 else None
+    paused_until_reset = False
 
     def reset_tracking_state(reason: str) -> None:
+        nonlocal track_frames_remaining, paused_until_reset
         for obj in tracked:
             obj["initialized"] = False
             obj["pose"] = None
         fps_hist.clear()
+        paused_until_reset = False
+        if args.track_frames > 0:
+            track_frames_remaining = args.track_frames
         logging.info("Tracking reset (%s) — re-detecting all objects", reason)
 
     pending_external_reset = {"value": False}
@@ -325,6 +335,15 @@ def main():
             if pending_external_reset["value"]:
                 pending_external_reset["value"] = False
                 reset_tracking_state("service")
+
+            if paused_until_reset:
+                if display:
+                    display.pump()
+                    if display.closed:
+                        running = False
+                        break
+                time.sleep(0.05)
+                continue
 
             if display and display.closed:
                 break
@@ -400,6 +419,23 @@ def main():
                     reset_tracking_state("service")
                     break
 
+                if paused_until_reset:
+                    if display:
+                        display.pump()
+                        if display.closed:
+                            running = False
+                            break
+                    time.sleep(0.05)
+                    break
+
+                if track_frames_remaining is not None and track_frames_remaining <= 0:
+                    paused_until_reset = True
+                    logging.info(
+                        "Reached track-frame limit (%d). Pausing until reset is requested.",
+                        args.track_frames,
+                    )
+                    continue
+
                 if display and display.closed:
                     running = False
                     break
@@ -445,6 +481,16 @@ def main():
                 dt = time.time() - t0
                 fps_hist.append(1.0 / dt if dt > 1e-4 else 0.0)
                 fps_val = sum(fps_hist) / len(fps_hist) if fps_hist else 0.0
+
+                if track_frames_remaining is not None:
+                    track_frames_remaining -= 1
+                    if track_frames_remaining <= 0:
+                        paused_until_reset = True
+                        logging.info(
+                            "Reached track-frame limit (%d). Pausing until reset is requested.",
+                            args.track_frames,
+                        )
+                        break
 
                 if display:
                     vis_bgr = draw_multi_tracking_vis(color_bgr, tracked, K, fps_val)

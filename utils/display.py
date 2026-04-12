@@ -65,6 +65,17 @@ class TkDisplay:
 
         return self._last_key
 
+    def pump(self) -> Optional[str]:
+        """Process pending GUI events without updating the displayed image."""
+        if self._closed:
+            return "q"
+
+        self._last_key = None
+        self._root.update_idletasks()
+        self._root.update()
+
+        return self._last_key
+
     @property
     def closed(self) -> bool:
         """Whether the window has been closed."""
