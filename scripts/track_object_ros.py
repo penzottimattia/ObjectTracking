@@ -356,6 +356,15 @@ def main():
                         continue
                     mask = get_sam3_mask(sam_processor, color_rgb, obj["name"])
                     if mask is not None and mask.sum() > 100:
+                        valid_depth = (depth >= 0.001) & mask.astype(bool)
+                        if valid_depth.sum() < 4:
+                            logging.warning(
+                                "Invalid RealSense depth for '%s': only %d valid pixels under the SAM3 mask. "
+                                "Check the depth stream, camera alignment, and object distance.",
+                                obj["name"],
+                                int(valid_depth.sum()),
+                            )
+                            continue
                         try:
                             obj["pose"] = obj["est"].register(
                                 K=K,
