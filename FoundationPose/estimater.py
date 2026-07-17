@@ -78,6 +78,22 @@ class FoundationPose:
     logging.info("reset done")
 
 
+  def reset_runtime_state(self):
+    """Clear per-frame tracking state so a fresh registration starts cleanly."""
+    self.gt_pose = None
+    self.pose_last = None
+    self.poses = None
+    self.scores = None
+    self.ob_mask = None
+    self.K = None
+    self.H = None
+    self.W = None
+    self.ob_id = None
+    self.best_id = None
+    self.last_trans_update = None
+    self.last_rot_update = None
+
+
 
   def get_tf_to_centered_mesh(self):
     tf_to_center = torch.eye(4, dtype=torch.float, device='cuda')

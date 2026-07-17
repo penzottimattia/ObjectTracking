@@ -13,6 +13,7 @@ Usage:
 """
 
 import argparse
+import gc
 import logging
 import os
 import sys
@@ -23,6 +24,8 @@ from pathlib import Path
 
 import cv2
 import numpy as np
+
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
 # Reason: append (not insert) so site-packages sam3 is found before
 # the project's sam3/ directory which would shadow it as a namespace package.
@@ -242,6 +245,13 @@ def main():
                         continue
                     mask = get_sam3_mask(sam_processor, color_rgb, obj["name"])
                     if mask is not None and mask.sum() > 100:
+                        gc.collect()
+                        try:
+                            import torch
+
+                            torch.cuda.empty_cache()
+                        except Exception:
+                            pass
                         try:
                             obj["pose"] = obj["est"].register(
                                 K=K,
@@ -325,7 +335,17 @@ def main():
                         for obj in tracked:
                             obj["initialized"] = False
                             obj["pose"] = None
+                            reset_fn = getattr(obj["est"], "reset_runtime_state", None)
+                            if callable(reset_fn):
+                                reset_fn()
                         fps_hist.clear()
+                        gc.collect()
+                        try:
+                            import torch
+
+                            torch.cuda.empty_cache()
+                        except Exception:
+                            pass
                         logging.info("Tracking reset — re-detecting all objects")
                         break
 
