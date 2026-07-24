@@ -1,0 +1,11 @@
+probe: probe
+cameras: [robotcam, tablecam]
+reference_camera: robotcam
+samples: 100
+sample_period: 0.10
+min_probe_translation_m: 0.01
+min_probe_rotation_deg: 3.0
+translation_scale_m: 0.02
+rotation_scale_deg: 3.0
+robust_loss: soft_l1
+output: config/pose_consensus.yaml
