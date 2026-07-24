@@ -1,0 +1,7 @@
+cameras:
+  robotcam:
+    serial: "213322070131"
+    frame_id: "robotcam_color_optical_frame"
+  tablecam:
+    serial: "207222073899"
+    frame_id: "tablecam_color_optical_frame"

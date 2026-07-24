@@ -90,6 +90,34 @@ def make_crop_data_batch(render_size, ob_in_cams, mesh, rgb, depth, K, crop_rati
 
 
 
+@torch.inference_mode()
+def make_crop_data_batch_multi(items, render_size, crop_ratio, cfg, glctx, dataset):
+  """Build one RefineNet batch from independent camera/object scenes."""
+  if not items:
+    raise ValueError("items must not be empty")
+  batches = []
+  for item in items:
+    batches.append(make_crop_data_batch(
+      render_size=render_size, ob_in_cams=item["ob_in_cams"],
+      mesh=item["mesh"], rgb=item["rgb"], depth=item["depth"], K=item["K"],
+      crop_ratio=crop_ratio, xyz_map=item["xyz_map"],
+      normal_map=item.get("normal_map"), mesh_diameter=item["mesh_diameter"],
+      cfg=cfg, glctx=glctx, mesh_tensors=item.get("mesh_tensors"), dataset=dataset))
+
+  def cat(name):
+    values = [getattr(batch, name) for batch in batches]
+    if values[0] is None:
+      return None
+    return torch.cat(values, dim=0)
+
+  return BatchPoseData(
+    rgbAs=cat("rgbAs"), rgbBs=cat("rgbBs"), depthAs=cat("depthAs"),
+    depthBs=cat("depthBs"), normalAs=cat("normalAs"), normalBs=cat("normalBs"),
+    poseA=cat("poseA"), poseB=cat("poseB"), xyz_mapAs=cat("xyz_mapAs"),
+    xyz_mapBs=cat("xyz_mapBs"), tf_to_crops=cat("tf_to_crops"),
+    Ks=cat("Ks"), mesh_diameters=cat("mesh_diameters"))
+
+
 class PoseRefinePredictor:
   def __init__(self,):
     logging.info("welcome")
@@ -294,3 +322,54 @@ class PoseRefinePredictor:
 
     return B_in_cams_out, None
 
+
+  @torch.inference_mode()
+  def predict_multi(self, items, iteration=5):
+    """Refine one pose per independent scene in a single model forward pass."""
+    if not items:
+      return []
+    torch.set_default_tensor_type('torch.cuda.FloatTensor')
+    prepared = []
+    for item in items:
+      copy = dict(item)
+      copy["ob_in_cams"] = np.asarray(copy["ob_in_cams"]).reshape(-1,4,4)
+      copy["rgb"] = torch.as_tensor(copy["rgb"], device='cuda', dtype=torch.float)
+      copy["depth"] = torch.as_tensor(copy["depth"], device='cuda', dtype=torch.float)
+      copy["xyz_map"] = torch.as_tensor(copy["xyz_map"], device='cuda', dtype=torch.float)
+      if copy.get("mesh_tensors") is None:
+        copy["mesh_tensors"] = make_mesh_tensors(copy["mesh"])
+      prepared.append(copy)
+
+    poses = torch.cat([torch.as_tensor(x["ob_in_cams"], device='cuda', dtype=torch.float) for x in prepared], 0)
+    trans_normalizer = self.cfg['trans_normalizer']
+    if not isinstance(trans_normalizer, float):
+      trans_normalizer = torch.as_tensor(list(trans_normalizer), device='cuda', dtype=torch.float).reshape(1,3)
+    bs = 1024
+    for _ in range(iteration):
+      offset = 0
+      for item in prepared:
+        n = len(item["ob_in_cams"]); item["ob_in_cams"] = poses[offset:offset+n]; offset += n
+      data = make_crop_data_batch_multi(prepared, self.cfg.input_resize, self.cfg['crop_ratio'], self.cfg, prepared[0].get("glctx"), self.dataset)
+      next_poses = []
+      for b in range(0, data.rgbAs.shape[0], bs):
+        A = torch.cat([data.rgbAs[b:b+bs].cuda(), data.xyz_mapAs[b:b+bs].cuda()], 1).float()
+        B = torch.cat([data.rgbBs[b:b+bs].cuda(), data.xyz_mapBs[b:b+bs].cuda()], 1).float()
+        with torch.cuda.amp.autocast(enabled=self.amp):
+          output = self.model(A, B)
+        output = {k:v.float() for k,v in output.items()}
+        if self.cfg['trans_rep'] != 'tracknet':
+          raise NotImplementedError("predict_multi currently supports trans_rep=tracknet")
+        trans_delta = torch.tanh(output['trans'])*trans_normalizer if not self.cfg['normalize_xyz'] else output['trans']
+        if self.cfg['rot_rep']=='axis_angle':
+          rot_delta = torch.tanh(output['rot'])*self.cfg['rot_normalizer']
+          rot_mat_delta = so3_exp_map(rot_delta).permute(0,2,1)
+        elif self.cfg['rot_rep']=='6d':
+          rot_mat_delta = rotation_6d_to_matrix(output['rot']).permute(0,2,1)
+        else:
+          raise RuntimeError("Unsupported rotation representation")
+        if self.cfg['normalize_xyz']:
+          trans_delta *= data.mesh_diameters[b:b+bs,None]/2
+        next_poses.append(egocentric_delta_pose_to_pose(data.poseA[b:b+bs], trans_delta, rot_mat_delta))
+      poses = torch.cat(next_poses, 0)
+    torch.cuda.empty_cache()
+    return [pose for pose in poses]

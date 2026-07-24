@@ -262,3 +262,30 @@ The pose contains:
 
 - FoundationPose: [NVIDIA Source Code License](FoundationPose/LICENSE)
 - SAM3: See `sam3/LICENSE`
+
+### Multi-camera batched tracking
+
+Configure cameras in `camera_config.yaml`:
+
+```yaml
+cameras:
+  robotcam:
+    serial: "1234567890"
+    frame_id: "robotcam_color_optical_frame"
+  tablecam:
+    serial: "0987654321"
+    frame_id: "tablecam_color_optical_frame"
+```
+
+Track one or more objects from multiple RealSense cameras:
+
+```bash
+python scripts/track_object.py --objects cup can --cameras robotcam tablecam
+python scripts/track_object_ros.py --objects cup can --cameras robotcam tablecam
+```
+
+`--camera NAME` remains available as the backward-compatible single-camera alias. During initialization, SAM3 and FoundationPose registration run sequentially for each camera/object pair. During tracking, all active camera/object poses are refined in one GPU batch using one shared SAM3, RefineNet and ScoreNet model set. Model-weight VRAM therefore remains constant, while activation memory increases with `number of cameras x number of objects`.
+
+ROS pose topics default to `/object_pose/<camera>/<object>`. Use `--topic-prefix` to change the prefix. For a single camera and object, `--topic` remains supported. Image topics use the configured `--image-topic` directly for one camera and append the camera name for multiple cameras. Each pose is expressed in that camera's optical frame from `frame_id`; poses are not fused between cameras.
+
+Camera capture uses one blocking `wait_for_frames()` call per pipeline, so camera frames may differ by approximately one frame. All cameras currently share the command-line width, height, and FPS.

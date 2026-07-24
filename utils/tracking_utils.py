@@ -338,7 +338,6 @@ def draw_tracking_vis(
     if initialized and pose is not None:
         center_pose = pose @ np.linalg.inv(to_origin)
         # Pose used for the axis gizmo: mesh origin or AABB center
-        axis_pose = pose if use_mesh_origin else center_pose
         vis_rgb = cv2.cvtColor(vis_bgr, cv2.COLOR_BGR2RGB)
         vis_rgb = draw_posed_3d_box(K, img=vis_rgb, ob_in_cam=center_pose, bbox=bbox)
         axis_pose = pose if mesh_origin else center_pose
@@ -445,3 +444,49 @@ def draw_multi_tracking_vis(
 
     return vis_bgr
 
+
+def load_camera_config(name: Optional[str] = None) -> dict:
+    """Return serial and ROS frame_id for a named camera."""
+    camera_name = name or "default"
+    config_path = PROJECT_ROOT / "camera_config.yaml"
+    if not config_path.exists():
+        if name:
+            raise FileNotFoundError(f"camera_config.yaml is required for camera '{name}'")
+        return {"name": camera_name, "serial": None,
+                "frame_id": "camera_color_optical_frame"}
+    import yaml
+    with config_path.open("r", encoding="utf-8") as stream:
+        cfg = yaml.safe_load(stream) or {}
+    cameras = cfg.get("cameras", {})
+    if camera_name not in cameras:
+        raise KeyError(f"Camera '{camera_name}' not in camera_config.yaml; available: {list(cameras)}")
+    entry = dict(cameras[camera_name] or {})
+    entry.update(name=camera_name)
+    entry.setdefault("serial", None)
+    entry.setdefault("frame_id", f"{camera_name}_color_optical_frame")
+    return entry
+
+
+def draw_multi_camera_vis(frames: list, tracked_objects: list, fps_val: float) -> np.ndarray:
+    """Tile camera feeds and draw each camera's object states."""
+    tiles = []
+    for camera_idx, frame in enumerate(frames):
+        view_objects = []
+        for obj in tracked_objects:
+            view = dict(obj)
+            view.update(obj["camera_states"][camera_idx])
+            view_objects.append(view)
+        tile = draw_multi_tracking_vis(frame["color_bgr"], view_objects, frame["K"], fps_val)
+        cv2.putText(tile, frame["name"], (10, tile.shape[0]-15),
+                    cv2.FONT_HERSHEY_SIMPLEX, .7, (255,255,255), 2)
+        tiles.append(tile)
+    if not tiles:
+        raise ValueError("frames must not be empty")
+    target_h = min(tile.shape[0] for tile in tiles)
+    tiles = [cv2.resize(tile, (round(tile.shape[1]*target_h/tile.shape[0]), target_h)) for tile in tiles]
+    cols = int(np.ceil(np.sqrt(len(tiles))))
+    rows = int(np.ceil(len(tiles)/cols))
+    width = max(tile.shape[1] for tile in tiles)
+    blank = np.zeros((target_h, width, 3), dtype=np.uint8)
+    tiles += [blank] * (rows*cols-len(tiles))
+    return np.vstack([np.hstack(tiles[r*cols:(r+1)*cols]) for r in range(rows)])

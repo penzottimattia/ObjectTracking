@@ -287,3 +287,18 @@ class FoundationPose:
     return (pose@self.get_tf_to_centered_mesh()).data.cpu().numpy().reshape(4,4)
 
 
+  def track_one_multi(self, scenes, iteration):
+    """Track this mesh in multiple camera scenes through one refiner batch."""
+    items = []
+    for scene in scenes:
+      pose_last = scene.get("pose_last")
+      if pose_last is None:
+        raise RuntimeError("Each scene must have pose_last from registration")
+      depth = torch.as_tensor(scene["depth"], device='cuda', dtype=torch.float)
+      depth = bilateral_filter_depth(erode_depth(depth, radius=2, device='cuda'), radius=2, device='cuda')
+      K = scene["K"]
+      xyz = depth2xyzmap_batch(depth[None], torch.as_tensor(K, device='cuda', dtype=torch.float)[None], zfar=np.inf)[0]
+      items.append(dict(rgb=scene["rgb"], depth=depth, K=K, ob_in_cams=pose_last.reshape(1,4,4).data.cpu().numpy() if torch.is_tensor(pose_last) else np.asarray(pose_last).reshape(1,4,4), xyz_map=xyz, normal_map=None, mesh=self.mesh, mesh_tensors=self.mesh_tensors, mesh_diameter=self.diameter, glctx=self.glctx))
+    centered = self.refiner.predict_multi(items, iteration=iteration)
+    tf = self.get_tf_to_centered_mesh()
+    return [(pose@tf).data.cpu().numpy().reshape(4,4) for pose in centered], centered
