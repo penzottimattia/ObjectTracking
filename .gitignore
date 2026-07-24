@@ -53,3 +53,7 @@ runs/
 
 # Temp ply files
 ply/
+
+# FP objects
+objects/
+object/
