@@ -12,6 +12,7 @@ Usage:
 """
 
 import argparse
+import gc
 import logging
 import os
 import sys
@@ -22,6 +23,8 @@ from pathlib import Path
 
 import cv2
 import numpy as np
+
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
 # Reason: append (not insert) so site-packages sam3 is found before
 # the project's sam3/ directory which would shadow it as a namespace package.
@@ -307,10 +310,20 @@ def main():
         for obj in tracked:
             obj["initialized"] = False
             obj["pose"] = None
+            reset_fn = getattr(obj["est"], "reset_runtime_state", None)
+            if callable(reset_fn):
+                reset_fn()
         fps_hist.clear()
         paused_until_reset = False
         if args.track_frames > 0:
             track_frames_remaining = args.track_frames
+        gc.collect()
+        try:
+            import torch
+
+            torch.cuda.empty_cache()
+        except Exception:
+            pass
         logging.info("Tracking reset (%s) — re-detecting all objects", reason)
 
     pending_external_reset = {"value": False}
@@ -384,6 +397,13 @@ def main():
                                 int(valid_depth.sum()),
                             )
                             continue
+                        gc.collect()
+                        try:
+                            import torch
+
+                            torch.cuda.empty_cache()
+                        except Exception:
+                            pass
                         try:
                             obj["pose"] = obj["est"].register(
                                 K=K,
@@ -500,6 +520,7 @@ def main():
                         break
                     if key == "r":
                         reset_tracking_state("keyboard")
+                        break
 
     except KeyboardInterrupt:
         logging.info("Interrupted by user")

@@ -50,3 +50,6 @@ venv/
 *.log
 wandb/
 runs/
+
+# Temp ply files
+ply/
