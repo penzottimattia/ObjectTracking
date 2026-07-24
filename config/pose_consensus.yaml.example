@@ -1,0 +1,18 @@
+world_frame: world
+
+consensus:
+  translation_tolerance_m: 0.05
+  rotation_tolerance_deg: 10.0
+  min_cameras: 2
+  failures_before_reset: 3
+
+# world_T_camera transforms. Replace these example values with calibration results.
+cameras:
+  robotcam:
+    world_T_camera:
+      translation: {x: 0.0, y: 0.0, z: 1.0}
+      rotation_xyzw: {x: 0.0, y: 0.0, z: 0.0, w: 1.0}
+  tablecam:
+    world_T_camera:
+      translation: {x: 1.0, y: 0.0, z: 1.0}
+      rotation_xyzw: {x: 0.0, y: 0.0, z: 0.0, w: 1.0}
