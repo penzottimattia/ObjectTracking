@@ -93,27 +93,47 @@ def _rotation_distance_deg(a: np.ndarray, b: np.ndarray) -> float:
     return float(np.degrees(np.arccos(cosine)))
 
 
-def _align_rotation_axis(rotation: np.ndarray, target: np.ndarray, axis: str) -> np.ndarray:
-    """Align one object-frame axis to target while preserving the local twist."""
-    axis_index = {"x": 0, "y": 1, "z": 2}[axis]
-    rotation = _normalize_rotation(rotation)
-    target = _normalize_rotation(target)
-    aligned = target[:, axis_index].copy()
+def _axis_aligned_candidate(rotation: np.ndarray, aligned: np.ndarray,
+                            axis_index: int, target: np.ndarray) -> np.ndarray:
+    """Build the closest right-handed frame for one directed aligned axis."""
     secondary_index = (axis_index + 1) % 3
-    secondary = rotation[:, secondary_index]
+    secondary = rotation[:, secondary_index].copy()
     secondary -= aligned * np.dot(aligned, secondary)
     if np.linalg.norm(secondary) < 1e-9:
-        secondary = target[:, secondary_index]
+        secondary = target[:, secondary_index].copy()
         secondary -= aligned * np.dot(aligned, secondary)
     secondary /= np.linalg.norm(secondary)
     result = np.empty((3, 3), dtype=np.float64)
     result[:, axis_index] = aligned
     result[:, secondary_index] = secondary
     remaining_index = 3 - axis_index - secondary_index
-    cyclic = (axis_index, secondary_index, remaining_index) in ((0, 1, 2), (1, 2, 0), (2, 0, 1))
+    cyclic = (axis_index, secondary_index, remaining_index) in (
+        (0, 1, 2), (1, 2, 0), (2, 0, 1)
+    )
     result[:, remaining_index] = (np.cross(aligned, secondary) if cyclic
                                   else np.cross(secondary, aligned))
     return _normalize_rotation(result)
+
+
+def _align_rotation_axis(rotation: np.ndarray, target: np.ndarray, axis: str,
+                         soft: bool = False) -> np.ndarray:
+    """Align an object axis while selecting the least disruptive full frame.
+
+    In soft mode the configured axis is treated as an unoriented line. Both
+    +target and -target are valid, and the candidate requiring the smallest
+    geodesic rotation from the raw pose is selected. This automatically avoids
+    a needless 180-degree flip of the other two axes on symmetric objects.
+    """
+    axis_index = {"x": 0, "y": 1, "z": 2}[axis]
+    rotation = _normalize_rotation(rotation)
+    target = _normalize_rotation(target)
+    target_axis = target[:, axis_index]
+    candidates = [_axis_aligned_candidate(rotation, target_axis, axis_index, target)]
+    if soft:
+        candidates.append(
+            _axis_aligned_candidate(rotation, -target_axis, axis_index, target)
+        )
+    return min(candidates, key=lambda candidate: _rotation_distance_deg(rotation, candidate))
 
 
 def average_poses(poses) -> np.ndarray:
@@ -164,7 +184,8 @@ class PoseConsensus:
                  rotation_tolerance_deg: float = 10.0,
                  min_cameras: int = 2,
                  failures_before_reset: int = 3,
-                 force_align_axis: Optional[str] = None):
+                 force_align_axis: Optional[str] = None,
+                 soft_force_align: bool = False):
         if min_cameras < 2:
             raise ValueError("min_cameras must be at least 2")
         if failures_before_reset < 1:
@@ -179,6 +200,7 @@ class PoseConsensus:
             if force_align_axis not in {"x", "y", "z"}:
                 raise ValueError("force_align_axis must be one of: x, y, z")
         self.force_align_axis = force_align_axis
+        self.soft_force_align = bool(soft_force_align)
         self._failure_streaks: Dict[str, int] = {}
 
     @classmethod
@@ -211,7 +233,8 @@ class PoseConsensus:
             return pose
         world_T_object = self.world_T_camera[camera] @ pose
         world_T_object[:3, :3] = _align_rotation_axis(
-            world_T_object[:3, :3], pose_world[:3, :3], self.force_align_axis
+            world_T_object[:3, :3], pose_world[:3, :3], self.force_align_axis,
+            soft=self.soft_force_align,
         )
         aligned_camera_pose = np.linalg.inv(self.world_T_camera[camera]) @ world_T_object
         aligned_camera_pose[:3, 3] = pose[:3, 3]
@@ -250,7 +273,7 @@ class PoseConsensus:
             if self.force_align_axis is not None:
                 fused[:3, :3] = _align_rotation_axis(
                     fused[:3, :3], world_poses[cameras[0]][:3, :3],
-                    self.force_align_axis,
+                    self.force_align_axis, soft=self.soft_force_align,
                 )
             reason = "camera poses agree"
         else:

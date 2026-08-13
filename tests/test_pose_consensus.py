@@ -12,6 +12,12 @@ def pose(x=0, yaw_deg=0):
     return value
 
 
+def _rotation_distance_for_test(a, b):
+    relative = a.T @ b
+    cosine = np.clip((np.trace(relative) - 1.0) / 2.0, -1.0, 1.0)
+    return float(np.degrees(np.arccos(cosine)))
+
+
 class PoseConsensusTests(unittest.TestCase):
     def test_consistent_poses_are_averaged(self):
         engine = PoseConsensus({"a": np.eye(4), "b": np.eye(4)},
@@ -69,6 +75,29 @@ class PoseConsensusTests(unittest.TestCase):
     def test_invalid_force_align_axis_is_rejected(self):
         with self.assertRaises(ValueError):
             PoseConsensus({"a": np.eye(4), "b": np.eye(4)}, force_align_axis="yaw")
+
+    def test_soft_force_align_avoids_complete_secondary_axis_flip(self):
+        engine = PoseConsensus(
+            {"a": np.eye(4), "b": np.eye(4)},
+            force_align_axis="x", soft_force_align=True
+        )
+        raw = pose(yaw_deg=180)
+        target = pose(yaw_deg=0)
+        display = engine.align_camera_pose_for_display("b", raw, target)
+        # X is on the same geometric line, while Z remains consistent with raw.
+        self.assertAlmostEqual(abs(np.dot(display[:3, 0], target[:3, 0])), 1.0)
+        self.assertGreater(np.dot(display[:3, 2], raw[:3, 2]), 0.999)
+        self.assertLess(_rotation_distance_for_test(raw[:3, :3], display[:3, :3]), 1e-6)
+
+    def test_hard_force_align_keeps_directed_axis(self):
+        engine = PoseConsensus(
+            {"a": np.eye(4), "b": np.eye(4)},
+            force_align_axis="x", soft_force_align=False
+        )
+        display = engine.align_camera_pose_for_display(
+            "b", pose(yaw_deg=180), pose(yaw_deg=0)
+        )
+        np.testing.assert_allclose(display[:3, 0], [1, 0, 0], atol=1e-9)
 
 
 if __name__ == "__main__":

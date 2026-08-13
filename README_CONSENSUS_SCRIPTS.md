@@ -60,3 +60,22 @@ each camera: the selected object axis is identical in the common world frame,
 while each raw camera translation is retained so the overlay stays on the
 observed object. The raw tracker state is not modified. The fused ROS pose uses
 the same canonical axis. Omit the setting or use `null` for the original behavior.
+
+
+### Preventing a secondary-axis 180-degree flip
+
+For objects whose selected symmetry axis has no meaningful arrow direction, use:
+
+```yaml
+consensus:
+  force_align_axis: x
+  soft_force_align: true
+```
+
+Soft alignment tests both `+X` and `-X` in the common world frame and chooses
+the branch requiring the smallest full-frame rotation from each raw camera pose.
+Thus the X lines remain coincident, while a needless 180-degree inversion of Y/Z
+is avoided automatically. The tradeoff is that the X arrows may point in opposite
+directions; for a symmetric, unoriented axis this is normally the correct visual
+meaning. Keep `soft_force_align: false` when the positive arrow direction is
+semantically important and must be identical across cameras.
