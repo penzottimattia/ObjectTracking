@@ -1,4 +1,6 @@
+import tempfile
 import unittest
+from pathlib import Path
 import numpy as np
 from utils.pose_consensus import PoseConsensus, average_poses
 
@@ -49,6 +51,42 @@ class PoseConsensusTests(unittest.TestCase):
     def test_quaternion_sign_does_not_break_average(self):
         result = average_poses([pose(yaw_deg=179), pose(yaw_deg=-179)])
         self.assertAlmostEqual(result[0, 0], -1.0, places=3)
+
+    def test_force_align_axis_uses_deterministic_camera_anchor(self):
+        engine = PoseConsensus(
+            {"a": np.eye(4), "b": np.eye(4)},
+            rotation_tolerance_deg=90,
+            force_align_axis="x",
+        )
+        result = engine.evaluate(
+            "hexagon", {"b": pose(yaw_deg=60), "a": pose(yaw_deg=0)}
+        )
+        self.assertTrue(result.consistent)
+        np.testing.assert_allclose(result.pose_world[:3, 0], [1, 0, 0], atol=1e-9)
+
+    def test_force_align_axis_is_loaded_from_yaml(self):
+        config = """
+world_frame: world
+consensus:
+  force_align_axis: y
+cameras:
+  a:
+    world_T_camera:
+      matrix: [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]]
+  b:
+    world_T_camera:
+      matrix: [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]]
+"""
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "consensus.yaml"
+            path.write_text(config)
+            engine = PoseConsensus.from_yaml(path)
+        self.assertEqual(engine.force_align_axis, "y")
+
+    def test_invalid_force_align_axis_is_rejected(self):
+        with self.assertRaises(ValueError):
+            PoseConsensus({"a": np.eye(4), "b": np.eye(4)},
+                          force_align_axis="yaw")
 
 
 if __name__ == "__main__":

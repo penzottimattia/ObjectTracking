@@ -105,6 +105,7 @@ If the tracker already has an internal `reset()` function, call it directly. Thi
 - Require several consecutive failures before resetting to avoid reacting to one bad frame.
 - Do not publish a fused pose when consensus fails.
 - Average translation arithmetically and rotations with quaternion eigenvector averaging.
+- For symmetric objects, optionally set `consensus.force_align_axis` to `x`, `y`, or `z`; the fused pose then keeps that object-frame axis aligned to the first camera in deterministic name order.
 - Reset all trackers after a confirmed disagreement when only two cameras are present.
 
 ## Example

@@ -49,4 +49,21 @@ The fused topic uses the `world_frame` from the consensus YAML. Individual camer
 --fused-topic-prefix /tracked_pose
 ```
 
+## Symmetric objects: forced axis alignment
+
+Quaternion averaging can publish an in-between orientation when cameras select
+different equivalent symmetry branches, for example on a hexagonal object. Set
+`force_align_axis` in the YAML `consensus` section to `x`, `y`, or `z`:
+
+```yaml
+consensus:
+  force_align_axis: x
+```
+
+The selected object-frame axis is copied exactly from the first contributing
+camera in deterministic camera-name order. Translation and the remaining
+rotational degree of freedom are still fused. Leave it `null` or omit it to keep
+the previous quaternion-average behavior. Choose an axis that distinguishes the
+symmetry branch (for a prism symmetric around Z, usually choose X or Y).
+
 On confirmed disagreement, the scripts call the same internal reset routine used by keyboard and ROS service resets. All camera/object states are cleared, GPU cache cleanup is requested, and SAM3 registration starts again.

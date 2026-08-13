@@ -5,6 +5,10 @@ consensus:
   rotation_tolerance_deg: 10.0
   min_cameras: 2
   failures_before_reset: 3
+  # Optional: x, y, or z. Keeps this object-frame axis exactly aligned to
+  # the first camera in deterministic name order instead of averaging it.
+  # Useful for rotationally symmetric meshes (for example, a hexagon).
+  force_align_axis: null
 
 # world_T_camera transforms. Replace these example values with calibration results.
 cameras:
