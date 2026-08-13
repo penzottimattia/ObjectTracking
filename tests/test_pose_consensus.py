@@ -76,28 +76,32 @@ class PoseConsensusTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             PoseConsensus({"a": np.eye(4), "b": np.eye(4)}, force_align_axis="yaw")
 
-    def test_soft_force_align_avoids_complete_secondary_axis_flip(self):
+    def test_auto_twist_correction_flips_non_forced_axes_only(self):
         engine = PoseConsensus(
             {"a": np.eye(4), "b": np.eye(4)},
-            force_align_axis="x", soft_force_align=True
+            force_align_axis="x", auto_correct_forced_axis_twist=True
         )
-        raw = pose(yaw_deg=180)
-        target = pose(yaw_deg=0)
+        raw = np.eye(4)
+        # Target has the same +X but Y and Z are both reversed: a pi twist on X.
+        target = np.eye(4)
+        target[:3, :3] = np.diag([1.0, -1.0, -1.0])
         display = engine.align_camera_pose_for_display("b", raw, target)
-        # X is on the same geometric line, while Z remains consistent with raw.
-        self.assertAlmostEqual(abs(np.dot(display[:3, 0], target[:3, 0])), 1.0)
-        self.assertGreater(np.dot(display[:3, 2], raw[:3, 2]), 0.999)
-        self.assertLess(_rotation_distance_for_test(raw[:3, :3], display[:3, :3]), 1e-6)
+        np.testing.assert_allclose(display[:3, 0], target[:3, 0], atol=1e-9)
+        np.testing.assert_allclose(display[:3, 1], raw[:3, 1], atol=1e-9)
+        np.testing.assert_allclose(display[:3, 2], raw[:3, 2], atol=1e-9)
 
-    def test_hard_force_align_keeps_directed_axis(self):
+    def test_auto_twist_correction_can_be_disabled(self):
         engine = PoseConsensus(
             {"a": np.eye(4), "b": np.eye(4)},
-            force_align_axis="x", soft_force_align=False
+            force_align_axis="x", auto_correct_forced_axis_twist=False
         )
-        display = engine.align_camera_pose_for_display(
-            "b", pose(yaw_deg=180), pose(yaw_deg=0)
-        )
-        np.testing.assert_allclose(display[:3, 0], [1, 0, 0], atol=1e-9)
+        raw = np.eye(4)
+        target = np.eye(4)
+        target[:3, :3] = np.diag([1.0, -1.0, -1.0])
+        display = engine.align_camera_pose_for_display("b", raw, target)
+        np.testing.assert_allclose(display[:3, 0], target[:3, 0], atol=1e-9)
+        np.testing.assert_allclose(display[:3, 1], target[:3, 1], atol=1e-9)
+        np.testing.assert_allclose(display[:3, 2], target[:3, 2], atol=1e-9)
 
 
 if __name__ == "__main__":

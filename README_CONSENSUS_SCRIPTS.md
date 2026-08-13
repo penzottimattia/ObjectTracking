@@ -62,20 +62,20 @@ observed object. The raw tracker state is not modified. The fused ROS pose uses
 the same canonical axis. Omit the setting or use `null` for the original behavior.
 
 
-### Preventing a secondary-axis 180-degree flip
+### Automatic 180-degree twist correction
 
-For objects whose selected symmetry axis has no meaningful arrow direction, use:
+Use the directed forced axis together with automatic twist correction:
 
 ```yaml
 consensus:
   force_align_axis: x
-  soft_force_align: true
+  auto_correct_forced_axis_twist: true
 ```
 
-Soft alignment tests both `+X` and `-X` in the common world frame and chooses
-the branch requiring the smallest full-frame rotation from each raw camera pose.
-Thus the X lines remain coincident, while a needless 180-degree inversion of Y/Z
-is avoided automatically. The tradeoff is that the X arrows may point in opposite
-directions; for a symmetric, unoriented axis this is normally the correct visual
-meaning. Keep `soft_force_align: false` when the positive arrow direction is
-semantically important and must be identical across cameras.
+The X direction is first aligned exactly across cameras. The implementation then
+checks Y and Z against the raw camera pose. If both are reversed, that identifies
+an avoidable 180-degree twist around X. It applies a local 180-degree rotation
+about X, which leaves +X unchanged while flipping Y and Z back. This is not soft
+or unoriented-axis alignment: the positive forced-axis arrow still overlaps and
+points the same way in all views. Set the parameter to `false` to disable this
+automatic branch correction.

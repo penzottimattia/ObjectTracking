@@ -8,10 +8,10 @@ consensus:
   # Optional: x, y, z, or null. Canonicalizes this object-frame axis in every
   # camera overlay as well as in the fused published pose.
   force_align_axis: null
-  # If true, the selected axis is treated as an unoriented line (+axis and
-  # -axis are equivalent). The least disruptive branch is selected, avoiding
-  # automatic 180-degree flips of the other axes on symmetric objects.
-  soft_force_align: false
+  # After the selected directed axis is aligned, detect whether both other
+  # axes are reversed. If so, apply 180 degrees about the forced axis; this
+  # preserves the forced axis while correcting the full-frame twist.
+  auto_correct_forced_axis_twist: true
 
 # world_T_camera transforms. Replace these example values with calibration results.
 cameras:
