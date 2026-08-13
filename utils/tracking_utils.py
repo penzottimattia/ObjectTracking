@@ -475,6 +475,8 @@ def draw_multi_camera_vis(frames: list, tracked_objects: list, fps_val: float) -
         for obj in tracked_objects:
             view = dict(obj)
             view.update(obj["camera_states"][camera_idx])
+            if view.get("display_pose") is not None:
+                view["pose"] = view["display_pose"]
             view_objects.append(view)
         tile = draw_multi_tracking_vis(frame["color_bgr"], view_objects, frame["K"], fps_val)
         cv2.putText(tile, frame["name"], (10, tile.shape[0]-15),

@@ -93,36 +93,30 @@ def _rotation_distance_deg(a: np.ndarray, b: np.ndarray) -> float:
     return float(np.degrees(np.arccos(cosine)))
 
 
-def _align_rotation_axis(rotation: np.ndarray, anchor: np.ndarray, axis: str) -> np.ndarray:
-    """Constrain one object-frame axis to the anchor pose, keeping the mean twist."""
+def _align_rotation_axis(rotation: np.ndarray, target: np.ndarray, axis: str) -> np.ndarray:
+    """Align one object-frame axis to target while preserving the local twist."""
     axis_index = {"x": 0, "y": 1, "z": 2}[axis]
     rotation = _normalize_rotation(rotation)
-    anchor = _normalize_rotation(anchor)
-    aligned = anchor[:, axis_index].copy()
-
-    # Use the next object axis to retain the unconstrained mean rotation's
-    # twist around the aligned axis. Fall back to the anchor if projection is
-    # numerically degenerate.
+    target = _normalize_rotation(target)
+    aligned = target[:, axis_index].copy()
     secondary_index = (axis_index + 1) % 3
     secondary = rotation[:, secondary_index]
     secondary -= aligned * np.dot(aligned, secondary)
     if np.linalg.norm(secondary) < 1e-9:
-        secondary = anchor[:, secondary_index]
+        secondary = target[:, secondary_index]
         secondary -= aligned * np.dot(aligned, secondary)
     secondary /= np.linalg.norm(secondary)
-
     result = np.empty((3, 3), dtype=np.float64)
     result[:, axis_index] = aligned
     result[:, secondary_index] = secondary
     remaining_index = 3 - axis_index - secondary_index
-    if (axis_index, secondary_index, remaining_index) in ((0, 1, 2), (1, 2, 0), (2, 0, 1)):
-        result[:, remaining_index] = np.cross(aligned, secondary)
-    else:
-        result[:, remaining_index] = np.cross(secondary, aligned)
+    cyclic = (axis_index, secondary_index, remaining_index) in ((0, 1, 2), (1, 2, 0), (2, 0, 1))
+    result[:, remaining_index] = (np.cross(aligned, secondary) if cyclic
+                                  else np.cross(secondary, aligned))
     return _normalize_rotation(result)
 
 
-def average_poses(poses, force_align_axis: Optional[str] = None) -> np.ndarray:
+def average_poses(poses) -> np.ndarray:
     poses = [np.asarray(pose, dtype=np.float64) for pose in poses]
     if not poses:
         raise ValueError("At least one pose is required")
@@ -130,13 +124,6 @@ def average_poses(poses, force_align_axis: Optional[str] = None) -> np.ndarray:
     result[:3, 3] = np.mean([pose[:3, 3] for pose in poses], axis=0)
     quaternions = [_rotation_to_quaternion(pose[:3, :3]) for pose in poses]
     result[:3, :3] = _quaternion_to_rotation(_average_quaternions(quaternions))
-    if force_align_axis is not None:
-        axis = str(force_align_axis).lower()
-        if axis not in {"x", "y", "z"}:
-            raise ValueError("force_align_axis must be one of: x, y, z")
-        result[:3, :3] = _align_rotation_axis(
-            result[:3, :3], poses[0][:3, :3], axis
-        )
     return result
 
 
@@ -211,6 +198,25 @@ class PoseConsensus:
         else:
             self._failure_streaks.pop(object_name, None)
 
+    def align_camera_pose_for_display(self, camera: str, camera_T_object: np.ndarray,
+                                      pose_world: np.ndarray) -> np.ndarray:
+        """Return a camera-frame pose whose selected axis matches fused world pose.
+
+        Translation is intentionally retained from the raw tracker pose so the
+        overlay remains attached to the observed object. Only the configured
+        axis direction is canonicalized in the common world frame.
+        """
+        pose = np.asarray(camera_T_object, dtype=np.float64).copy()
+        if self.force_align_axis is None or camera not in self.world_T_camera:
+            return pose
+        world_T_object = self.world_T_camera[camera] @ pose
+        world_T_object[:3, :3] = _align_rotation_axis(
+            world_T_object[:3, :3], pose_world[:3, :3], self.force_align_axis
+        )
+        aligned_camera_pose = np.linalg.inv(self.world_T_camera[camera]) @ world_T_object
+        aligned_camera_pose[:3, 3] = pose[:3, 3]
+        return aligned_camera_pose
+
     def evaluate(self, object_name: str,
                  camera_T_object: Mapping[str, Optional[np.ndarray]]) -> ConsensusResult:
         world_poses = {}
@@ -240,13 +246,12 @@ class PoseConsensus:
                       max_rotation <= self.rotation_tolerance_deg)
         if consistent:
             self._failure_streaks[object_name] = 0
-            # Sorted camera order makes the anchor deterministic when an axis
-            # is forced. This avoids publishing an in-between orientation for
-            # rotationally symmetric objects such as hexagonal parts.
-            fused = average_poses(
-                [world_poses[camera] for camera in cameras],
-                force_align_axis=self.force_align_axis,
-            )
+            fused = average_poses([world_poses[camera] for camera in cameras])
+            if self.force_align_axis is not None:
+                fused[:3, :3] = _align_rotation_axis(
+                    fused[:3, :3], world_poses[cameras[0]][:3, :3],
+                    self.force_align_axis,
+                )
             reason = "camera poses agree"
         else:
             streak = self._failure_streaks.get(object_name, 0) + 1

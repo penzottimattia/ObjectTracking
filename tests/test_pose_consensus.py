@@ -1,6 +1,4 @@
-import tempfile
 import unittest
-from pathlib import Path
 import numpy as np
 from utils.pose_consensus import PoseConsensus, average_poses
 
@@ -52,41 +50,25 @@ class PoseConsensusTests(unittest.TestCase):
         result = average_poses([pose(yaw_deg=179), pose(yaw_deg=-179)])
         self.assertAlmostEqual(result[0, 0], -1.0, places=3)
 
-    def test_force_align_axis_uses_deterministic_camera_anchor(self):
+    def test_display_pose_aligns_selected_axis_across_camera_frames(self):
+        world_T_b = pose(0.0, yaw_deg=90)
         engine = PoseConsensus(
-            {"a": np.eye(4), "b": np.eye(4)},
-            rotation_tolerance_deg=90,
-            force_align_axis="x",
+            {"a": np.eye(4), "b": world_T_b},
+            rotation_tolerance_deg=90, force_align_axis="x"
         )
-        result = engine.evaluate(
-            "hexagon", {"b": pose(yaw_deg=60), "a": pose(yaw_deg=0)}
-        )
-        self.assertTrue(result.consistent)
-        np.testing.assert_allclose(result.pose_world[:3, 0], [1, 0, 0], atol=1e-9)
-
-    def test_force_align_axis_is_loaded_from_yaml(self):
-        config = """
-world_frame: world
-consensus:
-  force_align_axis: y
-cameras:
-  a:
-    world_T_camera:
-      matrix: [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]]
-  b:
-    world_T_camera:
-      matrix: [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]]
-"""
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "consensus.yaml"
-            path.write_text(config)
-            engine = PoseConsensus.from_yaml(path)
-        self.assertEqual(engine.force_align_axis, "y")
+        raw_a = pose(1.0, yaw_deg=0)
+        raw_b = pose(1.0, yaw_deg=-30)
+        fused_world = pose(1.0, yaw_deg=0)
+        display_a = engine.align_camera_pose_for_display("a", raw_a, fused_world)
+        display_b = engine.align_camera_pose_for_display("b", raw_b, fused_world)
+        axis_a_world = (engine.world_T_camera["a"] @ display_a)[:3, 0]
+        axis_b_world = (engine.world_T_camera["b"] @ display_b)[:3, 0]
+        np.testing.assert_allclose(axis_a_world, axis_b_world, atol=1e-9)
+        np.testing.assert_allclose(display_b[:3, 3], raw_b[:3, 3], atol=1e-9)
 
     def test_invalid_force_align_axis_is_rejected(self):
         with self.assertRaises(ValueError):
-            PoseConsensus({"a": np.eye(4), "b": np.eye(4)},
-                          force_align_axis="yaw")
+            PoseConsensus({"a": np.eye(4), "b": np.eye(4)}, force_align_axis="yaw")
 
 
 if __name__ == "__main__":

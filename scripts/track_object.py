@@ -155,9 +155,13 @@ def main():
                     from utils.consensus_tracking import (
                         evaluate_tracked_objects,
                         should_reset_any,
+                        update_consensus_display_poses,
                     )
                     consensus_results = evaluate_tracked_objects(
                         consensus, tracked, cameras
+                    )
+                    update_consensus_display_poses(
+                        consensus, tracked, cameras, consensus_results
                     )
                     if should_reset_any(consensus_results):
                         detail = "; ".join(
