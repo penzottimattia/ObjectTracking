@@ -275,6 +275,21 @@ class PoseConsensus:
             return ConsensusResult(False, False, False, None, 0.0, 0.0, cameras,
                                    f"need {self.min_cameras} cameras, got {len(cameras)}")
 
+        # Canonicalize the configured symmetric axis before measuring camera
+        # disagreement. This is deliberately part of consensus evaluation,
+        # rather than a display-only post-process, so an equivalent rotational
+        # branch cannot accumulate failures and trigger a tracker reset.
+        if self.force_align_axis is not None:
+            target_rotation = world_poses[cameras[0]][:3, :3]
+            for camera in cameras:
+                aligned_pose = world_poses[camera].copy()
+                aligned_pose[:3, :3] = _align_rotation_axis(
+                    aligned_pose[:3, :3], target_rotation,
+                    self.force_align_axis,
+                    auto_correct_twist=self.auto_correct_forced_axis_twist,
+                )
+                world_poses[camera] = aligned_pose
+
         max_translation = 0.0
         max_rotation = 0.0
         for i, first in enumerate(cameras):
@@ -288,13 +303,7 @@ class PoseConsensus:
         if consistent:
             self._failure_streaks[object_name] = 0
             fused = average_poses([world_poses[camera] for camera in cameras])
-            if self.force_align_axis is not None:
-                fused[:3, :3] = _align_rotation_axis(
-                    fused[:3, :3], world_poses[cameras[0]][:3, :3],
-                    self.force_align_axis,
-                    auto_correct_twist=self.auto_correct_forced_axis_twist,
-                )
-            reason = "camera poses agree"
+            reason = "camera poses agree after configured rotation alignment"
         else:
             streak = self._failure_streaks.get(object_name, 0) + 1
             self._failure_streaks[object_name] = streak
